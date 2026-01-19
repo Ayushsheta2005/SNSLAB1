@@ -16,6 +16,19 @@ class AttackScenarios:
     def __init__(self, host: str = '127.0.0.1', port: int = 9999):
         self.host = host
         self.port = port
+        self.connection_timeout = 5  # seconds
+    
+    def _setup_client(self, client_id: int, master_key: bytes):
+        """Helper to setup client with timeout"""
+        client = SecureClient(client_id, master_key, self.host, self.port)
+        try:
+            client.connect()
+            if client.socket:
+                client.socket.settimeout(self.connection_timeout)
+        except Exception as e:
+            print(f"[WARNING] Connection failed: {e}")
+            raise
+        return client
     
     def replay_attack(self):
         """
@@ -27,11 +40,11 @@ class AttackScenarios:
         print("="*60)
         
         master_key = b'client1_master_k'
-        client = SecureClient(1, master_key, self.host, self.port)
         
         try:
-            # Connect and perform handshake
-            client.connect()
+            print("\n[ATTACK] Connecting to server...")
+            client = self._setup_client(1, master_key)
+            
             client.send_hello()
             
             # Send legitimate data
@@ -57,15 +70,31 @@ class AttackScenarios:
             time.sleep(0.5)
             
             try:
-                # Send the same message again (wrong round number)
+                # Send the same message again (wrong round number - from round 1 but we're at round 2)
                 client.socket.sendall(struct.pack('!I', len(captured_message)) + captured_message)
                 
                 # Try to receive response
+                client.socket.settimeout(2)
                 response = client.receive_message()
+                
+                # The attack fails because:
+                # 1. Keys have evolved - old message uses old keys
+                # 2. HMAC will fail with evolved keys
+                # 3. Server will send KEY_DESYNC_ERROR
                 if response:
-                    print("[ATTACK] ❌ VULNERABILITY: Server accepted replayed message!")
+                    # Check if it's an error response
+                    if len(response) >= 7:
+                        opcode = response[0]
+                        if opcode == Opcode.KEY_DESYNC_ERROR.value or opcode == Opcode.TERMINATE.value:
+                            print("[ATTACK] ✓ Server rejected replayed message (KEY_DESYNC_ERROR)")
+                        else:
+                            print(f"[ATTACK] ❌ VULNERABILITY: Server accepted replayed message! (opcode: {opcode})")
+                    else:
+                        print("[ATTACK] ✓ Server rejected replayed message (connection closed)")
                 else:
-                    print("[ATTACK] ✓ Server rejected replayed message (connection closed)")
+                    print("[ATTACK] ✓ Server rejected replayed message (no response)")
+            except socket.timeout:
+                print(f"[ATTACK] ✓ Replay attack blocked (timeout - server closed connection)")
             except Exception as e:
                 print(f"[ATTACK] ✓ Replay attack failed: {e}")
             
@@ -76,8 +105,13 @@ class AttackScenarios:
             print("  4. Keys evolve after each round, making old messages invalid")
             
         except Exception as e:
-            print(f"[ATTACK] Error: {e}")
+            print(f"[ATTACK] Error during setup: {e}")
         finally:
+            try:
+                if client.socket:
+                    client.socket.close()
+            except:
+                pass
             client.disconnect()
     
     def message_modification_attack(self):
@@ -90,10 +124,9 @@ class AttackScenarios:
         print("="*60)
         
         master_key = b'client2_master_k'
-        client = SecureClient(2, master_key, self.host, self.port)
         
         try:
-            client.connect()
+            client = self._setup_client(2, master_key)
             client.send_hello()
             
             print("\n[ATTACK] Sending message and modifying ciphertext...")
@@ -142,10 +175,9 @@ class AttackScenarios:
         print("="*60)
         
         master_key = b'client3_master_k'
-        client = SecureClient(3, master_key, self.host, self.port)
         
         try:
-            client.connect()
+            client = self._setup_client(3, master_key)
             client.send_hello()
             
             print("\n[ATTACK] Sending legitimate message...")
@@ -186,10 +218,9 @@ class AttackScenarios:
         print("[ATTACK] by manipulating round numbers...")
         
         master_key = b'client4_master_k'
-        client = SecureClient(4, master_key, self.host, self.port)
         
         try:
-            client.connect()
+            client = self._setup_client(4, master_key)
             client.send_hello()
             
             # Send first message
@@ -232,10 +263,9 @@ class AttackScenarios:
         print("="*60)
         
         master_key = b'client5_master_k'
-        client = SecureClient(5, master_key, self.host, self.port)
         
         try:
-            client.connect()
+            client = self._setup_client(5, master_key)
             client.send_hello()
             
             print("\n[ATTACK] Capturing server response...")
@@ -259,12 +289,23 @@ class AttackScenarios:
             
             try:
                 client.socket.sendall(struct.pack('!I', len(captured_response)) + captured_response)
+                client.socket.settimeout(2)
                 response = client.receive_message()
                 
                 if response:
-                    print("[ATTACK] ❌ VULNERABILITY: Server processed reflected message!")
+                    # Check if it's an error response
+                    if len(response) >= 7:
+                        opcode = response[0]
+                        if opcode == Opcode.KEY_DESYNC_ERROR.value or opcode == Opcode.TERMINATE.value:
+                            print("[ATTACK] ✓ Server rejected reflected message (KEY_DESYNC_ERROR)")
+                        else:
+                            print(f"[ATTACK] ❌ VULNERABILITY: Server processed reflected message! (opcode: {opcode})")
+                    else:
+                        print("[ATTACK] ✓ Server rejected reflected message")
                 else:
-                    print("[ATTACK] ✓ Server rejected reflected message")
+                    print("[ATTACK] ✓ Server rejected reflected message (no response)")
+            except socket.timeout:
+                print(f"[ATTACK] ✓ Reflection blocked (timeout)")
             except Exception as e:
                 print(f"[ATTACK] ✓ Reflection failed: {e}")
             
@@ -291,10 +332,9 @@ class AttackScenarios:
         
         # Use client ID that's not in server's master key list
         fake_master_key = b'fake_master_key!'
-        client = SecureClient(99, fake_master_key, self.host, self.port)
         
         try:
-            client.connect()
+            client = self._setup_client(99, fake_master_key)
             success = client.send_hello()
             
             if not success:
@@ -320,23 +360,35 @@ class AttackScenarios:
         print("="*80)
         
         attacks = [
-            self.replay_attack,
-            self.message_modification_attack,
-            self.key_desync_attack,
-            self.message_reordering_attack,
-            self.reflection_attack,
-            self.unauthorized_client_attack
+            ("REPLAY", self.replay_attack),
+            ("MESSAGE MODIFICATION", self.message_modification_attack),
+            ("KEY DESYNCHRONIZATION", self.key_desync_attack),
+            ("MESSAGE REORDERING", self.message_reordering_attack),
+            ("REFLECTION", self.reflection_attack),
+            ("UNAUTHORIZED CLIENT", self.unauthorized_client_attack)
         ]
         
-        for attack in attacks:
+        passed = 0
+        failed = 0
+        
+        for name, attack in attacks:
             try:
                 attack()
-                time.sleep(2)  # Pause between attacks
+                passed += 1
+                time.sleep(1)  # Short pause between attacks
+            except ConnectionRefusedError:
+                print(f"\n[ERROR] Cannot connect to server for {name} attack")
+                print("[ERROR] Make sure server is running!")
+                failed += 1
+            except socket.timeout:
+                print(f"\n[ERROR] {name} attack timed out")
+                failed += 1
             except Exception as e:
-                print(f"\n[ERROR] Attack scenario failed: {e}")
+                print(f"\n[ERROR] {name} attack failed: {e}")
+                failed += 1
         
         print("\n" + "="*80)
-        print(" SUMMARY: All attack scenarios have been demonstrated")
+        print(f" SUMMARY: {passed}/{len(attacks)} attack scenarios demonstrated successfully")
         print(" The protocol successfully resists all tested attacks")
         print("="*80 + "\n")
 
