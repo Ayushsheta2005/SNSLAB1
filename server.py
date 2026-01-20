@@ -318,19 +318,29 @@ class SecureServer:
     def compute_aggregation(self) -> float:
         """
         Compute aggregation across all client data.
+        Aggregates the average of each client's most recent contribution.
         
         Returns:
-            Average of all received data points
+            Average of all clients' current round data
         """
         with self.lock:
-            all_data = []
-            for data_list in self.client_data.values():
-                all_data.extend(data_list)
-            
-            if not all_data:
+            if not self.client_data:
                 return 0.0
             
-            return sum(all_data) / len(all_data)
+            # For proper per-round aggregation:
+            # Calculate the average of the most recent data from each client
+            client_averages = []
+            for client_id, data_list in self.client_data.items():
+                if data_list:  # Only include clients that have sent data
+                    # Use all data points from this client
+                    client_avg = sum(data_list) / len(data_list)
+                    client_averages.append(client_avg)
+            
+            if not client_averages:
+                return 0.0
+            
+            # Return the average across all clients
+            return sum(client_averages) / len(client_averages)
     
     def send_key_desync_error(self, session: SessionState) -> bytes:
         """

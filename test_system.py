@@ -67,17 +67,28 @@ def main():
             time.sleep(0.5)
         
         # Wait for clients to complete
-        print("\nClients are communicating with server...\n")
+        print("\nClients are communicating with server...")
+        print("Note: Clients will run interactively. Press Ctrl+C to stop them.\n")
         
-        for i, proc in enumerate(client_procs, 1):
-            stdout, stderr = proc.communicate(timeout=10)
-            print(f"--- Client {i} Output ---")
-            print(stdout)
-            if stderr:
-                print(f"Errors: {stderr}")
-            print()
+        try:
+            for i, proc in enumerate(client_procs, 1):
+                stdout, stderr = proc.communicate(timeout=30)
+                print(f"--- Client {i} Output ---")
+                print(stdout)
+                if stderr:
+                    print(f"Errors: {stderr}")
+                print()
+        except subprocess.TimeoutExpired:
+            print("\nClients are still running (interactive mode).")
+            print("Terminating clients for demonstration purposes...")
+            for proc in client_procs:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except:
+                    proc.kill()
         
-        print("✓ All clients completed successfully\n")
+        print("✓ Client demonstration completed\n")
         
         # Run attack demonstrations
         print_banner("STEP 3: Running Attack Demonstrations")

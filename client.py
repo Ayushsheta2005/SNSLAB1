@@ -296,14 +296,36 @@ def main():
         if not client.send_hello():
             return
         
-        # Send some data
-        for i in range(3):
-            data = f"{10.5 + i}, {20.3 + i}, {30.1 + i}"
-            if not client.send_data(data):
-                break
-            time.sleep(1)
+        print(f"\n[CLIENT {client_id}] Ready to send data")
+        print(f"[CLIENT {client_id}] Enter comma-separated numbers (e.g., 10.5, 20.3, 30.1)")
+        print(f"[CLIENT {client_id}] Press Ctrl+C to exit\n")
         
-        print(f"[CLIENT {client_id}] Communication complete")
+        # Continuous input loop
+        while True:
+            try:
+                # Get user input
+                data = input(f"[CLIENT {client_id}] Enter data: ").strip()
+                
+                if not data:
+                    print(f"[CLIENT {client_id}] Empty input, please enter comma-separated numbers")
+                    continue
+                
+                # Validate input format (basic check)
+                try:
+                    # Try to parse to verify it's valid numeric data
+                    [float(x.strip()) for x in data.split(',')]
+                except ValueError:
+                    print(f"[CLIENT {client_id}] Invalid format. Use comma-separated numbers (e.g., 10.5, 20.3)")
+                    continue
+                
+                # Send data to server
+                if not client.send_data(data):
+                    print(f"[CLIENT {client_id}] Failed to send data, connection may be closed")
+                    break
+                    
+            except EOFError:
+                print(f"\n[CLIENT {client_id}] End of input")
+                break
         
     except KeyboardInterrupt:
         print(f"\n[CLIENT {client_id}] Interrupted by user")
