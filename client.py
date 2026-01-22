@@ -8,7 +8,9 @@ import struct
 import time
 from protocol_fsm import (
     SessionState, ProtocolMessage, ProtocolFSM,
-    Opcode, Direction, ProtocolPhase
+    Opcode, Direction, ProtocolPhase,
+    SecurityError, InvalidHMACError, ReplayAttackError,
+    ReorderingAttackError, KeyDesyncError, InvalidDirectionError
 )
 from crypto_utils import CryptoUtils
 
@@ -189,6 +191,37 @@ class SecureClient:
                 return False
             elif response_msg.opcode == Opcode.TERMINATE:
                 print(f"[CLIENT {self.session.client_id}] TERMINATE received: {response_msg.plaintext.decode()}")
+                self.session.terminate()
+                return False
+            # Handle specific error codes
+            elif response_msg.opcode == Opcode.ERROR_INVALID_HMAC:
+                print(f"[CLIENT {self.session.client_id}] ❌ Server detected: INVALID HMAC")
+                print(f"[CLIENT {self.session.client_id}]    Reason: Message tampering or key mismatch")
+                self.session.terminate()
+                return False
+            elif response_msg.opcode == Opcode.ERROR_REPLAY_DETECTED:
+                print(f"[CLIENT {self.session.client_id}] ❌ Server detected: REPLAY ATTACK")
+                print(f"[CLIENT {self.session.client_id}]    Reason: Old message with past round number")
+                self.session.terminate()
+                return False
+            elif response_msg.opcode == Opcode.ERROR_REORDERING_DETECTED:
+                print(f"[CLIENT {self.session.client_id}] ❌ Server detected: MESSAGE REORDERING")
+                print(f"[CLIENT {self.session.client_id}]    Reason: Out-of-sequence message")
+                self.session.terminate()
+                return False
+            elif response_msg.opcode == Opcode.ERROR_KEY_DESYNC:
+                print(f"[CLIENT {self.session.client_id}] ❌ Server detected: KEY DESYNCHRONIZATION")
+                print(f"[CLIENT {self.session.client_id}]    Reason: Encryption keys out of sync")
+                self.session.terminate()
+                return False
+            elif response_msg.opcode == Opcode.ERROR_INVALID_DIRECTION:
+                print(f"[CLIENT {self.session.client_id}] ❌ Server detected: INVALID DIRECTION")
+                print(f"[CLIENT {self.session.client_id}]    Reason: Possible reflection attack")
+                self.session.terminate()
+                return False
+            elif response_msg.opcode == Opcode.ERROR_INVALID_CLIENT:
+                print(f"[CLIENT {self.session.client_id}] ❌ Server rejected: UNAUTHORIZED CLIENT")
+                print(f"[CLIENT {self.session.client_id}]    Reason: Client ID not authorized")
                 self.session.terminate()
                 return False
             elif response_msg.opcode != Opcode.SERVER_AGGR_RESPONSE:

@@ -18,6 +18,17 @@ class Opcode(IntEnum):
     SERVER_AGGR_RESPONSE = 40
     KEY_DESYNC_ERROR = 50
     TERMINATE = 60
+    
+    # Enhanced Error Codes for Specific Attack Scenarios
+    ERROR_INVALID_HMAC = 51          # HMAC verification failed (tampering detected)
+    ERROR_REPLAY_DETECTED = 52       # Replay attack detected (old round number)
+    ERROR_REORDERING_DETECTED = 53   # Message reordering detected (wrong round)
+    ERROR_KEY_DESYNC = 54            # Key desynchronization detected
+    ERROR_INVALID_DIRECTION = 55     # Wrong direction field (reflection attack)
+    ERROR_INVALID_PHASE = 56         # Invalid opcode for current phase
+    ERROR_INVALID_CLIENT = 57        # Unauthorized client
+    ERROR_PADDING_ERROR = 58         # Padding validation failed
+    ERROR_DECRYPTION_FAILED = 59     # Decryption error
 
 
 class Direction(IntEnum):
@@ -31,6 +42,75 @@ class ProtocolPhase(IntEnum):
     INIT = 0
     ACTIVE = 1
     TERMINATED = 2
+
+
+class SecurityError(Exception):
+    """Base class for security-related errors with specific error codes"""
+    def __init__(self, error_code: Opcode, message: str, details: dict = None):
+        self.error_code = error_code
+        self.message = message
+        self.details = details or {}
+        super().__init__(f"[{error_code.name}] {message}")
+
+
+class InvalidHMACError(SecurityError):
+    """HMAC verification failed - message tampering or key mismatch detected"""
+    def __init__(self, expected_round: int, actual_round: int = None):
+        super().__init__(
+            Opcode.ERROR_INVALID_HMAC,
+            "HMAC verification failed - message authentication error (tampering or key mismatch)",
+            {"expected_round": expected_round, "actual_round": actual_round}
+        )
+
+
+class ReplayAttackError(SecurityError):
+    """Replay attack detected - old message with past round number"""
+    def __init__(self, expected_round: int, received_round: int):
+        super().__init__(
+            Opcode.ERROR_REPLAY_DETECTED,
+            f"Replay attack detected - received old message from round {received_round}, expected {expected_round}",
+            {"expected_round": expected_round, "received_round": received_round}
+        )
+
+
+class ReorderingAttackError(SecurityError):
+    """Message reordering detected - future or out-of-sequence message"""
+    def __init__(self, expected_round: int, received_round: int):
+        super().__init__(
+            Opcode.ERROR_REORDERING_DETECTED,
+            f"Message reordering detected - expected round {expected_round}, got {received_round}",
+            {"expected_round": expected_round, "received_round": received_round}
+        )
+
+
+class KeyDesyncError(SecurityError):
+    """Key desynchronization detected - decryption failed"""
+    def __init__(self, client_id: int, round_num: int):
+        super().__init__(
+            Opcode.ERROR_KEY_DESYNC,
+            f"Key desynchronization detected for client {client_id} at round {round_num}",
+            {"client_id": client_id, "round_num": round_num}
+        )
+
+
+class InvalidDirectionError(SecurityError):
+    """Invalid direction field - possible reflection attack"""
+    def __init__(self, expected: Direction, received: int):
+        super().__init__(
+            Opcode.ERROR_INVALID_DIRECTION,
+            f"Invalid direction - expected {expected.name}, got {received} (possible reflection attack)",
+            {"expected": expected.value, "received": received}
+        )
+
+
+class InvalidPhaseError(SecurityError):
+    """Invalid opcode for current protocol phase"""
+    def __init__(self, current_phase: ProtocolPhase, received_opcode: Opcode):
+        super().__init__(
+            Opcode.ERROR_INVALID_PHASE,
+            f"Invalid opcode {received_opcode.name} for phase {current_phase.name}",
+            {"current_phase": current_phase.value, "received_opcode": received_opcode.value}
+        )
 
 
 class SessionState:
@@ -163,7 +243,14 @@ class ProtocolMessage:
     def parse_and_verify(message_bytes: bytes, enc_key: bytes, mac_key: bytes,
                          expected_round: int, expected_direction: Direction) -> 'ProtocolMessage':
         """
-        Parse, verify, and decrypt a message.
+        Parse, verify, and decrypt a message with ENHANCED ERROR DETECTION.
+        
+        Raises specific exceptions for different attack scenarios:
+        - InvalidHMACError: HMAC verification failed (tampering)
+        - ReplayAttackError: Old round number (replay attack)
+        - ReorderingAttackError: Future/wrong round number (reordering)
+        - InvalidDirectionError: Wrong direction field (reflection attack)
+        - KeyDesyncError: Decryption failed (key desynchronization)
         
         Args:
             message_bytes: Raw message bytes
@@ -176,7 +263,7 @@ class ProtocolMessage:
             Decrypted ProtocolMessage object
             
         Raises:
-            ValueError: If verification fails or message is invalid
+            Various SecurityError subclasses for specific attacks
         """
         if len(message_bytes) < ProtocolMessage.HEADER_SIZE + CryptoUtils.HMAC_SIZE:
             raise ValueError("Message too short")
@@ -186,31 +273,45 @@ class ProtocolMessage:
         data_to_verify = message_bytes[:hmac_start]
         received_hmac = message_bytes[hmac_start:]
         
-        # CRITICAL: Verify HMAC before any other processing
-        if not CryptoUtils.verify_hmac(mac_key, data_to_verify, received_hmac):
-            raise ValueError("HMAC verification failed - message authentication error")
-        
-        # Parse header
+        # Parse header to extract metadata for error reporting
         header = data_to_verify[:ProtocolMessage.HEADER_SIZE]
         opcode, client_id, round_num, direction = struct.unpack('!B B I B', header[:7])
         iv = header[7:23]
         ciphertext = data_to_verify[ProtocolMessage.HEADER_SIZE:]
         
-        # Verify round number
-        if round_num != expected_round:
-            raise ValueError(f"Round number mismatch: expected {expected_round}, got {round_num}")
+        # ===== STEP 1: CHECK ROUND NUMBER FIRST (Detect Replay/Reordering) =====
+        if round_num < expected_round:
+            # Old message - REPLAY ATTACK DETECTED
+            raise ReplayAttackError(expected_round, round_num)
+        elif round_num > expected_round:
+            # Future message - REORDERING ATTACK DETECTED
+            raise ReorderingAttackError(expected_round, round_num)
         
-        # Verify direction
+        # ===== STEP 2: CHECK DIRECTION FIELD (Detect Reflection) =====
         if direction != expected_direction:
-            raise ValueError(f"Direction mismatch: expected {expected_direction}, got {direction}")
+            raise InvalidDirectionError(expected_direction, direction)
         
-        # Decrypt ciphertext
-        padded_plaintext = CryptoUtils.aes_cbc_decrypt(ciphertext, enc_key, iv)
+        # ===== STEP 3: VERIFY HMAC (Detect Tampering/Key Issues) =====
+        # CRITICAL: HMAC verification happens BEFORE any decryption
+        if not CryptoUtils.verify_hmac(mac_key, data_to_verify, received_hmac):
+            # HMAC failed - could be:
+            # 1. Message tampering (modified ciphertext/header)
+            # 2. Key desynchronization (wrong MAC key)
+            # 3. Corrupted data in transit
+            raise InvalidHMACError(expected_round, round_num)
         
-        # Remove padding
+        # ===== STEP 4: DECRYPT (Only after all security checks pass) =====
+        try:
+            padded_plaintext = CryptoUtils.aes_cbc_decrypt(ciphertext, enc_key, iv)
+        except Exception as e:
+            # Decryption failed - likely key desynchronization
+            raise KeyDesyncError(client_id, round_num)
+        
+        # ===== STEP 5: REMOVE PADDING =====
         try:
             plaintext = CryptoUtils.remove_pkcs7_padding(padded_plaintext)
         except ValueError as e:
+            # Padding error - data corruption or tampering
             raise ValueError(f"Padding removal failed - possible tampering: {e}")
         
         # Create message object

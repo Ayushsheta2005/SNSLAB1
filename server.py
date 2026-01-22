@@ -10,9 +10,13 @@ import time
 from typing import Dict, List
 from protocol_fsm import (
     SessionState, ProtocolMessage, ProtocolFSM,
-    Opcode, Direction, ProtocolPhase
+    Opcode, Direction, ProtocolPhase,
+    SecurityError, InvalidHMACError, ReplayAttackError,
+    ReorderingAttackError, KeyDesyncError, InvalidDirectionError,
+    InvalidPhaseError
 )
 from crypto_utils import CryptoUtils
+from logger import Logger, Colors, cprint, print_banner
 
 
 
@@ -178,22 +182,23 @@ class SecureServer:
     
     def handle_client_hello(self, client_id: int, msg_data: bytes) -> bytes:
         """
-        Handle CLIENT_HELLO message.
+        Handle CLIENT_HELLO message with ENHANCED ERROR DETECTION.
         
         Args:
             client_id: Client identifier
             msg_data: Raw message data
             
         Returns:
-            SERVER_CHALLENGE response
+            SERVER_CHALLENGE response or error message
         """
         try:
             print(f"[SERVER] Processing CLIENT_HELLO from client {client_id}")
             
             # Check if client is authorized
             if client_id not in self.master_keys:
-                print(f"[SERVER] Unauthorized client {client_id}")
-                return None
+                Logger.security("SERVER", f"Unauthorized client {client_id} attempted connection")
+                return self.send_security_error(None, Opcode.ERROR_INVALID_CLIENT, 
+                                               f"Client {client_id} not authorized", client_id)
             
             # Create new session
             with self.lock:
@@ -213,7 +218,7 @@ class SecureServer:
             
             # Validate FSM
             if not ProtocolFSM.validate_opcode(session.phase, msg.opcode):
-                print(f"[SERVER] Invalid opcode for phase {session.phase}")
+                Logger.security("SERVER", f"Invalid opcode {msg.opcode.name} for phase {session.phase.name}")
                 session.terminate()
                 return None
             
@@ -248,22 +253,52 @@ class SecureServer:
             
             return response_bytes
             
-        except ValueError as e:
-            print(f"[SERVER] Verification failed for CLIENT_HELLO: {e}")
+        except InvalidHMACError as e:
+            Logger.security("SERVER", f"❌ ATTACK DETECTED: Invalid HMAC from client {client_id}")
+            Logger.security("SERVER", f"   Reason: Message tampering or key mismatch detected")
+            Logger.security("SERVER", f"   Details: Expected round {e.details['expected_round']}")
+            return self.send_security_error(session, e.error_code, e.message, client_id)
+            
+        except ReplayAttackError as e:
+            Logger.security("SERVER", f"❌ ATTACK DETECTED: Replay attack from client {client_id}")
+            Logger.security("SERVER", f"   Expected round: {e.details['expected_round']}, Received: {e.details['received_round']}")
+            Logger.security("SERVER", f"   Attacker replaying old message from past round")
+            return self.send_security_error(session, e.error_code, e.message, client_id)
+            
+        except ReorderingAttackError as e:
+            Logger.security("SERVER", f"❌ ATTACK DETECTED: Message reordering from client {client_id}")
+            Logger.security("SERVER", f"   Expected round: {e.details['expected_round']}, Received: {e.details['received_round']}")
+            Logger.security("SERVER", f"   Out-of-sequence message detected")
+            return self.send_security_error(session, e.error_code, e.message, client_id)
+            
+        except KeyDesyncError as e:
+            Logger.security("SERVER", f"❌ ATTACK DETECTED: Key desynchronization with client {client_id}")
+            Logger.security("SERVER", f"   Decryption failed at round {e.details['round_num']}")
+            Logger.security("SERVER", f"   Keys are out of sync - possible attack or corruption")
+            return self.send_security_error(session, e.error_code, e.message, client_id)
+            
+        except InvalidDirectionError as e:
+            Logger.security("SERVER", f"❌ ATTACK DETECTED: Invalid direction from client {client_id}")
+            Logger.security("SERVER", f"   Expected: {e.details['expected']}, Received: {e.details['received']}")
+            Logger.security("SERVER", f"   Possible reflection attack attempt")
+            return self.send_security_error(session, e.error_code, e.message, client_id)
+            
+        except Exception as e:
+            Logger.error("SERVER", f"Unexpected error processing CLIENT_HELLO from client {client_id}", e)
             if client_id in self.sessions:
                 self.sessions[client_id].terminate()
             return None
     
     def handle_client_data(self, session: SessionState, msg_data: bytes) -> bytes:
         """
-        Handle CLIENT_DATA message.
+        Handle CLIENT_DATA message with ENHANCED ERROR DETECTION.
         
         Args:
             session: Session state
             msg_data: Raw message data
             
         Returns:
-            SERVER_AGGR_RESPONSE message
+            SERVER_AGGR_RESPONSE message or error message
         """
         try:
             print(f"[SERVER] Processing CLIENT_DATA from client {session.client_id}")
@@ -279,7 +314,7 @@ class SecureServer:
             
             # Validate FSM
             if not ProtocolFSM.validate_opcode(session.phase, msg.opcode):
-                print(f"[SERVER] Invalid opcode for phase {session.phase}")
+                Logger.security("SERVER", f"Invalid opcode {msg.opcode.name} for phase {session.phase.name}")
                 return self.send_terminate(session, "Invalid protocol state")
             
             # Parse client data (expecting comma-separated numbers)
@@ -304,6 +339,7 @@ class SecureServer:
             
             # Evolve C2S keys
             session.evolve_c2s_keys(msg.ciphertext, msg.iv)
+            Logger.debug("SERVER", f"Evolved C2S keys for client {session.client_id}")
             
             # Compute aggregation for this specific round number
             aggregated_result = self.compute_aggregation(current_round)
@@ -325,19 +361,46 @@ class SecureServer:
             
             # Evolve S2C keys
             session.evolve_s2c_keys(response_payload, b"OK")
+            Logger.debug("SERVER", f"Evolved S2C keys for client {session.client_id}")
             
             # Advance round
             session.advance_round()
             
-            print(f"[SERVER] Sent aggregation result to client {session.client_id}, advancing to round {session.round_number}")
+            Logger.success("SERVER", f"Sent aggregation result {Colors.BRIGHT_GREEN}{aggregated_result:.2f}{Colors.RESET} to client {session.client_id}, advancing to round {session.round_number}")
             
             return response_bytes
             
-        except ValueError as e:
-            print(f"[SERVER] Verification/Processing failed: {e}")
-            return self.send_key_desync_error(session)
+        except InvalidHMACError as e:
+            Logger.security("SERVER", f"❌ ATTACK DETECTED: Invalid HMAC from client {session.client_id}")
+            Logger.security("SERVER", f"   Reason: Message tampering or key desynchronization")
+            Logger.security("SERVER", f"   Round: {e.details['expected_round']}")
+            return self.send_security_error(session, e.error_code, e.message, session.client_id)
+            
+        except ReplayAttackError as e:
+            Logger.security("SERVER", f"❌ ATTACK DETECTED: Replay attack from client {session.client_id}")
+            Logger.security("SERVER", f"   Attacker replaying message from round {e.details['received_round']}")
+            Logger.security("SERVER", f"   Current round: {e.details['expected_round']}")
+            return self.send_security_error(session, e.error_code, e.message, session.client_id)
+            
+        except ReorderingAttackError as e:
+            Logger.security("SERVER", f"❌ ATTACK DETECTED: Message reordering from client {session.client_id}")
+            Logger.security("SERVER", f"   Received out-of-sequence message (round {e.details['received_round']})")
+            Logger.security("SERVER", f"   Expected round: {e.details['expected_round']}")
+            return self.send_security_error(session, e.error_code, e.message, session.client_id)
+            
+        except KeyDesyncError as e:
+            Logger.security("SERVER", f"❌ ATTACK DETECTED: Key desynchronization with client {session.client_id}")
+            Logger.security("SERVER", f"   Decryption failed at round {e.details['round_num']}")
+            Logger.security("SERVER", f"   Keys are out of sync")
+            return self.send_security_error(session, e.error_code, e.message, session.client_id)
+            
+        except InvalidDirectionError as e:
+            Logger.security("SERVER", f"❌ ATTACK DETECTED: Invalid direction from client {session.client_id}")
+            Logger.security("SERVER", f"   Possible reflection attack - wrong direction field")
+            return self.send_security_error(session, e.error_code, e.message, session.client_id)
+            
         except Exception as e:
-            print(f"[SERVER] Error handling CLIENT_DATA: {e}")
+            Logger.error("SERVER", f"Error handling CLIENT_DATA from client {session.client_id}", e)
             return self.send_terminate(session, f"Error: {e}")
     
     def compute_aggregation(self, round_num: int) -> float:
@@ -409,7 +472,7 @@ class SecureServer:
     
     def send_key_desync_error(self, session: SessionState) -> bytes:
         """
-        Send KEY_DESYNC_ERROR message.
+        Send KEY_DESYNC_ERROR message (legacy support).
         
         Args:
             session: Session state
@@ -417,13 +480,44 @@ class SecureServer:
         Returns:
             Error message bytes
         """
+        return self.send_security_error(session, Opcode.KEY_DESYNC_ERROR, 
+                                       "Key desynchronization detected", session.client_id)
+    
+    def send_security_error(self, session: SessionState, error_code: Opcode, 
+                           message: str, client_id: int) -> bytes:
+        """
+        Send specific security error message with detailed error code.
+        
+        Args:
+            session: Session state (may be None for unauthorized clients)
+            error_code: Specific error opcode (ERROR_INVALID_HMAC, ERROR_REPLAY_DETECTED, etc.)
+            message: Error message describing the attack/issue
+            client_id: Client identifier
+            
+        Returns:
+            Error message bytes
+        """
         try:
+            Logger.security("SERVER", f"Sending {error_code.name} to client {client_id}")
+            
+            # For unauthorized clients without session, send plaintext error
+            if session is None:
+                # Create simple error response (no encryption possible without session)
+                error_msg = struct.pack('!B B I B', 
+                                       error_code.value, 
+                                       client_id, 
+                                       0, 
+                                       Direction.SERVER_TO_CLIENT.value)
+                error_msg += message.encode()[:100]  # Limit message length
+                return error_msg
+            
+            # For authorized clients with session, send encrypted error
             error_msg = ProtocolMessage(
-                Opcode.KEY_DESYNC_ERROR,
-                session.client_id,
+                error_code,
+                client_id,
                 session.round_number,
                 Direction.SERVER_TO_CLIENT,
-                b"Key desynchronization detected"
+                message.encode()
             )
             
             response = error_msg.encrypt_and_sign(
@@ -431,10 +525,17 @@ class SecureServer:
                 session.s2c_mac_key
             )
             
+            # Terminate session and remove from aggregations
             session.terminate()
+            self.remove_client_from_aggregations(client_id)
+            
             return response
-        except:
-            session.terminate()
+            
+        except Exception as e:
+            Logger.error("SERVER", f"Error sending security error to client {client_id}", e)
+            if session:
+                session.terminate()
+                self.remove_client_from_aggregations(client_id)
             return None
     
     def send_terminate(self, session: SessionState, reason: str) -> bytes:
@@ -497,12 +598,18 @@ class SecureServer:
 
 def main():
     """Main entry point"""
+    print_banner("SECURE MULTI-CLIENT AGGREGATION SERVER")
+    Logger.info("SYSTEM", "Initializing server...")
+    
     server = SecureServer()
     
     try:
         server.start()
     except KeyboardInterrupt:
-        print("\n[SERVER] Shutting down...")
+        Logger.warning("SYSTEM", "Interrupt received")
+        server.stop()
+    except Exception as e:
+        Logger.critical("SYSTEM", "Fatal server error", e)
         server.stop()
 
 

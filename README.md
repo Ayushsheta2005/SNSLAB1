@@ -1,274 +1,477 @@
 # Secure Multi-Client Communication with Symmetric Keys
 
-## Project Overview
+**IIIT Hyderabad - CS5.470 System and Network Security**  
+**Lab Assignment 1**
 
-This project implements a stateful, symmetric-key-based secure communication protocol between a server and multiple clients, designed to operate in a hostile network environment. The implementation emphasizes protocol state management, key evolution (ratcheting), and resistance to various cryptographic attacks.
+
+## Assumptions and Limitations
+
+### Assumptions
+
+1. **Pre-shared Keys**: Each authorized client (IDs 1-5) possesses a unique master key distributed securely via an out-of-band channel (e.g., physical media, secure courier)
+
+2. **Trusted Endpoints**: Client and server software are trusted and not compromised. The implementation is secure if endpoints are secure.
+
+3. **TCP Reliability**: TCP provides reliable, in-order delivery at the transport layer. While the network may be adversarial, TCP handles basic packet ordering.
+
+4. **Cryptographic Primitives**: AES-128-CBC and HMAC-SHA256 are assumed to be cryptographically secure and unbroken.
+
+5. **Asynchronous Aggregation**: Clients do not synchronize before submitting data. Aggregation is computed on arrival without waiting.
+
+
+## Overview
+
+This project implements a **stateful, symmetric-key-based secure communication protocol** between a server and multiple clients operating in a hostile network environment. The protocol emphasizes state management, key evolution (ratcheting), and resistance to active adversarial attacks.
+
+### Key Features
+- ✅ **Stateful Protocol**: Round tracking, key evolution, and phase management
+- ✅ **Encrypt-then-MAC**: AES-128-CBC encryption with HMAC-SHA256 authentication
+- ✅ **Manual PKCS#7 Padding**: Explicit padding implementation (no automatic padding)
+- ✅ **Key Ratcheting**: Keys evolve after every message exchange
+- ✅ **Attack Resistance**: Defends against replay, modification, reordering, and reflection attacks
+- ✅ **Multi-Client Aggregation**: Server-side secure data aggregation
+- ✅ **Comprehensive Testing**: 10 attack scenarios with demonstrations
+
+---
 
 ## System Architecture
 
 ### Components
 
-1. **crypto_utils.py**: Core cryptographic primitives
-   - AES-128-CBC encryption/decryption
-   - Manual PKCS#7 padding/unpadding
-   - HMAC-SHA256 authentication
-   - Key derivation and evolution
+| File | Description |
+|------|-------------|
+| `server.py` | Multi-client server with session management and aggregation |
+| `client.py` | Client implementation with stateful communication |
+| `crypto_utils.py` | Core cryptographic primitives (AES-CBC, PKCS#7, HMAC) |
+| `protocol_fsm.py` | Protocol finite state machine and key evolution logic |
+| `attacks.py` | Automated attack demonstrations (10 scenarios) |
+| `manual_attacks.py` | Interactive attack testing tool |
+| `test_system.py` | Integrated system testing script |
+| `SECURITY.md` | Detailed security analysis and threat mitigation |
 
-2. **protocol_fsm.py**: Protocol state machine
-   - Session state management
-   - Key evolution (ratcheting)
-   - Round tracking
-   - Opcode validation
-   - Phase transitions
+### Protocol Flow
 
-3. **server.py**: Multi-client server implementation
-   - Handles multiple simultaneous clients
-   - Maintains per-client session state
-   - Performs secure aggregation
-   - Enforces protocol constraints
+```
+Client                           Server
+  |                                |
+  |------ CLIENT_HELLO (R=0) ---->|  [INIT Phase]
+  |                                |  (Verify HMAC, evolve keys)
+  |<---- SERVER_CHALLENGE (R=0) --|
+  |                                |
+  | [Both advance to ACTIVE phase] |
+  |                                |
+  |------ CLIENT_DATA (R=1) ----->|  [ACTIVE Phase]
+  |                                |  (Aggregate data)
+  |<-- SERVER_AGGR_RESPONSE (R=1)-|
+  |                                |
+  | [Keys evolve after each round] |
+  |                                |
+  |------ CLIENT_DATA (R=2) ----->|
+  |<-- SERVER_AGGR_RESPONSE (R=2)-|
+  |                                |
+```
 
-4. **client.py**: Client implementation
-   - Initiates secure sessions
-   - Sends encrypted data
-   - Validates server responses
-   - Maintains synchronization
+---
 
-5. **attacks.py**: Attack demonstrations
-   - Simulates 9 different attack scenarios
-   - Demonstrates protocol security properties
-   - Covers both adversarial and protocol-specific attacks
+## Cryptographic Specifications
 
-6. **manual_attacks.py**: Interactive attack tool
-   - Manual attack testing interface
-   - Custom message crafting
-   - Interactive security testing
+### Primitives
+- **Encryption**: AES-128-CBC (manual mode, no GCM/CCM)
+- **MAC**: HMAC-SHA256 (32 bytes)
+- **Padding**: Manual PKCS#7 implementation
+- **IV**: 16 bytes, freshly generated per message
+- **Key Derivation**: HKDF-SHA256
+
+### Message Format
+```
+| Opcode (1) | Client ID (1) | Round (4) | Direction (1) | IV (16) | Ciphertext (variable) | HMAC (32) |
+```
+
+Total overhead: **55 bytes** (excluding ciphertext)
+
+### Protocol Opcodes
+
+| Opcode | Name | Description |
+|--------|------|-------------|
+| 10 | `CLIENT_HELLO` | Client initiates handshake |
+| 20 | `SERVER_CHALLENGE` | Server responds to handshake |
+| 30 | `CLIENT_DATA` | Encrypted client data submission |
+| 40 | `SERVER_AGGR_RESPONSE` | Encrypted aggregated result |
+| 50 | `KEY_DESYNC_ERROR` | Key desynchronization detected |
+| 60 | `TERMINATE` | Session termination |
+
+### Key Evolution (Ratcheting)
+
+Keys evolve deterministically after each successful message exchange:
+
+```python
+# Client-to-Server Keys
+C2S_Enc_{R+1} = HKDF(C2S_Enc_R, Ciphertext_R)
+C2S_Mac_{R+1} = HKDF(C2S_Mac_R, IV_R)
+
+# Server-to-Client Keys
+S2C_Enc_{R+1} = HKDF(S2C_Enc_R, AggregatedData_R)
+S2C_Mac_{R+1} = HKDF(S2C_Mac_R, StatusCode_R)
+```
+
+**Critical Rule**: Keys evolve only after successful verification and decryption. Any failure terminates the session without key updates.
+
+---
 
 ## Requirements
 
-### Python Version
-- Python 3.7 or higher
+### System Requirements
+- **Python**: 3.7 or higher
+- **OS**: Linux, macOS, or Windows
+- **Network**: Localhost (127.0.0.1) or LAN
 
-### Dependencies
+### Python Dependencies
 ```bash
-pip install pycryptodome
+pycryptodome==3.19.0
 ```
 
-## Installation
-
-1. Clone or download the project files
-2. Install dependencies:
+Install dependencies:
 ```bash
-pip install pycryptodome
+pip install -r requirements.txt
 ```
 
-## Usage
-
-### Starting the Server
-
-Open a terminal and run:
+Or use the provided virtual environment setup:
 ```bash
-python server.py
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-The server will start listening on `127.0.0.1:9999` and handle multiple clients concurrently.
+---
 
-### Running Clients
+## Quick Start
 
-Open separate terminals for each client:
+### Option 1: Automated Setup (Recommended)
+```bash
+chmod +x run.sh
+./run.sh
+```
 
+This script will:
+1. Create a virtual environment
+2. Install dependencies
+3. Provide menu options for server, client, and attack demonstrations
+
+### Option 2: Manual Setup
+
+#### Step 1: Start the Server
+```bash
+python3 server.py
+```
+
+The server will:
+- Listen on `127.0.0.1:9999`
+- Support clients with IDs 1-5
+- Display connection status and aggregation results
+
+#### Step 2: Start Clients (in separate terminals)
 ```bash
 # Client 1
-python client.py 1
+python3 client.py 1
 
 # Client 2
-python client.py 2
+python3 client.py 2
 
-# Client 3
-python client.py 3
+# Client 3 (and so on...)
+python3 client.py 3
 ```
 
 Each client will:
-1. Connect to the server
-2. Perform handshake (CLIENT_HELLO → SERVER_CHALLENGE)
-3. Send data in multiple rounds
-4. Receive aggregated results from the server
+1. Complete handshake with server
+2. Prompt for numeric data input (e.g., `10.5, 20.3, 30.1`)
+3. Display aggregated results from server
 
-### Running Attack Demonstrations
-
-Ensure the server is running, then:
-
-**Automated Attacks:**
+#### Step 3: Run Attack Demonstrations
 ```bash
-python attacks.py
+python3 attacks.py
 ```
 
-This will demonstrate 9 different attack scenarios:
-- **Core Adversarial Attacks**: Replay, Message Modification, Message Reordering, Packet Dropping, Reflection
-- **Protocol-Specific Failures**: Key Desynchronization, Padding Tampering, Invalid HMACs, State Violations
+This will automatically demonstrate all 10 attack scenarios and show how the protocol defends against them.
 
-**Manual Interactive Attacks:**
+---
+
+## Usage Examples
+
+### Interactive Client Session
 ```bash
-python manual_attacks.py
+$ python3 client.py 1
+[CLIENT 1] Connected to server at 127.0.0.1:9999
+[CLIENT 1] Sending CLIENT_HELLO
+[CLIENT 1] Received SERVER_CHALLENGE: Challenge from server
+[CLIENT 1] Handshake complete, advancing to round 1
+[CLIENT 1] Ready to send data
+[CLIENT 1] Enter comma-separated numbers (e.g., 10.5, 20.3, 30.1)
+
+[CLIENT 1] Enter data: 10.5, 20.3, 30.1
+[CLIENT 1] Sending data: 10.5, 20.3, 30.1
+[CLIENT 1] Received: Aggregated sum=60.9, count=3, avg=20.30
+[CLIENT 1] Round complete, advancing to round 2
 ```
 
-**Verify All Attacks Are Implemented:**
+### Attack Demonstration
 ```bash
-python verify_attacks.py
+$ python3 attacks.py
+==================================================
+ATTACK SCENARIO 1: REPLAY ATTACK
+==================================================
+[ATTACK] Sending legitimate message...
+[ATTACK] Captured message of length 128
+[ATTACK] Attempting to replay captured message...
+[RESULT] ✓ Attack BLOCKED - Server rejected replay
+
+[ANALYSIS] The protocol rejects replay attacks because:
+  1. Each message includes a round number
+  2. Keys evolve after each round, making old messages invalid
+  ...
 ```
 
-## Protocol Flow
-
-### Phase 1: Initialization (Round 0)
-```
-Client → Server: CLIENT_HELLO (encrypted with C2S_Enc_0, authenticated with C2S_Mac_0)
-Server → Client: SERVER_CHALLENGE (encrypted with S2C_Enc_0, authenticated with S2C_Mac_0)
-```
-
-### Phase 2: Active Communication (Rounds 1, 2, ...)
-```
-Client → Server: CLIENT_DATA (encrypted data)
-Server → Client: SERVER_AGGR_RESPONSE (aggregated results)
-```
-
-After each round, keys evolve:
-- C2S_Enc_{R+1} = H(C2S_Enc_R || Ciphertext_R)
-- C2S_Mac_{R+1} = H(C2S_Mac_R || Nonce_R)
-- S2C_Enc_{R+1} = H(S2C_Enc_R || AggregatedData_R)
-- S2C_Mac_{R+1} = H(S2C_Mac_R || StatusCode_R)
-
-## Message Format
-
-```
-| Opcode (1 byte) | Client ID (1 byte) | Round (4 bytes) | Direction (1 byte) | 
-| IV (16 bytes) | Ciphertext (variable) | HMAC (32 bytes) |
-```
-
-- **Opcode**: Operation type (CLIENT_HELLO=10, SERVER_CHALLENGE=20, etc.)
-- **Client ID**: Unique client identifier (1-255)
-- **Round**: Current round number (0, 1, 2, ...)
-- **Direction**: CLIENT_TO_SERVER (1) or SERVER_TO_CLIENT (2)
-- **IV**: Random initialization vector for AES-CBC
-- **Ciphertext**: Encrypted payload (padded with PKCS#7)
-- **HMAC**: Authentication tag over header + ciphertext
-
-## Security Features
-
-### 1. Confidentiality
-- AES-128-CBC encryption with random IVs
-- Separate encryption keys for each direction
-- Keys evolve after each message
-
-### 2. Integrity & Authentication
-- HMAC-SHA256 over entire message
-- Verification before decryption
-- Separate MAC keys for each direction
-
-### 3. Freshness & Replay Protection
-- Round numbers strictly enforced
-- Messages must match expected round
-- Keys evolve, making old messages invalid
-
-### 4. Key Evolution (Ratcheting)
-- Keys update after each successful round
-- Forward secrecy properties
-- Desynchronization detection
-
-### 5. State Management
-- Explicit protocol phases (INIT, ACTIVE, TERMINATED)
-- Strict FSM transitions
-- Session termination on any violation
-
-## Testing Multiple Clients
-
-To test with multiple clients simultaneously:
-
-1. Start the server:
+### Manual Attack Testing
 ```bash
-python server.py
+python3 manual_attacks.py
 ```
 
-2. In separate terminals, start multiple clients:
+Interactive menu for security researchers to manually craft and test attacks.
+
+---
+
+## Server-Side Aggregation
+
+### Aggregation Logic
+
+The server performs **real-time multi-client aggregation** on numeric data:
+
+```python
+# For each round, aggregate data from all active clients
+Sum = Σ(all_values_from_all_clients)
+Count = total_number_of_values
+Average = Sum / Count
+```
+
+### Important Aggregation Assumptions
+
+1. **No Synchronization**: Aggregation includes all data submitted so far by currently connected clients
+2. **Arrival-Based**: Results computed on message arrival, not waiting for all clients
+3. **Round-Specific**: Each round maintains separate aggregation state
+4. **Variable Results**: The same round may show different aggregates depending on when clients submit
+
+**Example Scenario**:
+```
+Round 1:
+  - Client 1 sends: 10.0, 20.0 (aggregated immediately)
+  - Server responds to Client 1: sum=30.0, count=2, avg=15.0
+  
+  - Client 2 sends: 30.0, 40.0 (aggregated with Client 1's data)
+  - Server responds to Client 2: sum=100.0, count=4, avg=25.0
+```
+
+This design reflects real-world scenarios where clients operate asynchronously.
+
+---
+
+## Security Properties
+
+### Defenses Implemented
+
+| Attack Type | Defense Mechanism | Status |
+|-------------|-------------------|--------|
+| Replay Attacks | Round numbers + Key evolution | ✅ Defended |
+| Message Modification | HMAC-SHA256 (Encrypt-then-MAC) | ✅ Defended |
+| Message Reordering | Strict round enforcement | ✅ Defended |
+| Reflection Attacks | Directional keys + Direction field | ✅ Defended |
+| Key Desynchronization | Atomic key updates + Detection | ✅ Detected |
+| Padding Tampering | HMAC over entire ciphertext | ✅ Defended |
+| Invalid HMAC | Pre-decryption verification | ✅ Defended |
+| State Violations | FSM validation | ✅ Defended |
+| Unauthorized Clients | Pre-shared key authentication | ✅ Defended |
+| MITM Attacks | Encryption + Authentication | ✅ Defended |
+
+See **[SECURITY.md](SECURITY.md)** for detailed security analysis.
+
+---
+
+
+### Limitations
+
+1. **No Long-term Forward Secrecy**: Compromise of the master key exposes all past sessions. The protocol provides forward secrecy within a session (via key evolution), but not across sessions.
+
+2. **No Server Authentication Against Compromise**: If the server is compromised, an attacker can impersonate it to clients. Mutual authentication exists, but assumes both parties are secure.
+
+3. **DoS Vulnerability**: An adversary can always drop packets at the network layer (denial-of-service). The protocol detects drops via timeouts but cannot prevent them.
+
+4. **No Public Key Infrastructure**: Requires symmetric pre-shared keys. Lacks the flexibility and scalability of PKI-based systems.
+
+5. **Limited Scalability**: Master keys must be provisioned manually for each client. Not suitable for large-scale dynamic client populations.
+
+### Not Defended Against
+
+- **Traffic Analysis**: Message sizes, timing patterns, and connection metadata are observable
+- **Network-Layer DoS**: Flooding, bandwidth exhaustion (out of protocol scope)
+- **Endpoint Compromise**: If client or server is compromised, security guarantees void
+- **Side-Channel Attacks**: Timing attacks, power analysis (implementation-specific, out of scope)
+
+---
+
+## Testing
+
+### Automated Test Suite
 ```bash
-# Terminal 1
-python client.py 1
-
-# Terminal 2
-python client.py 2
-
-# Terminal 3
-python client.py 3
+python3 run_all_tests.py
 ```
 
-The server will aggregate data from all active clients and send personalized encrypted responses.
+Runs comprehensive tests including:
+- Protocol state machine validation
+- Cryptographic primitive correctness
+- Multi-client scenarios
+- Attack resistance verification
 
-## Pre-Configured Master Keys
+### Manual Testing
+```bash
+# Terminal 1: Server
+python3 server.py
 
-The following client IDs are pre-configured:
-- Client 1: `client1_master_k`
-- Client 2: `client2_master_k`
-- Client 3: `client3_master_k`
-- Client 4: `client4_master_k`
-- Client 5: `client5_master_k`
+# Terminal 2: Client 1
+python3 client.py 1
 
-**Note**: In production, these should be securely generated and distributed.
+# Terminal 3: Attack simulation
+python3 attacks.py
+```
 
-## Troubleshooting
+### Interactive Attack Tool
+```bash
+python3 manual_attacks.py
+```
 
-### Connection Refused
-- Ensure the server is running before starting clients
-- Check that the port 9999 is not in use
+Features:
+- Replay attack crafting
+- Message modification
+- Key desynchronization injection
+- Custom message injection
+- MITM simulation
 
-### Session Terminated
-- This is expected behavior when attacks are detected
-- Check server logs for specific error messages
-
-### HMAC Verification Failed
-- Indicates message tampering or key desynchronization
-- Session will be automatically terminated
+---
 
 ## Project Structure
 
 ```
-SNSLAB1/
-├── crypto_utils.py       # Cryptographic primitives
-├── protocol_fsm.py       # Protocol state machine
-├── server.py            # Server implementation
-├── client.py            # Client implementation
-├── attacks.py           # Automated attack demonstrations (9 attacks)
-├── manual_attacks.py    # Interactive attack tool
-├── verify_attacks.py    # Attack implementation verification
-├── test_system.py       # Automated system testing
-├── test_round_aggregation.py  # Round-by-round aggregation test
-├── run.sh               # Menu-driven launcher script
-├── README.md            # This file
-├── SECURITY.md          # Security analysis
-├── ATTACKS_SUMMARY.md   # Attack implementation details
-├── IMPLEMENTATION_GUIDE.md  # Detailed implementation guide
-└── QUICK_START.md       # Quick start guide
+.
+├── server.py                 # Multi-client server
+├── client.py                 # Client implementation
+├── crypto_utils.py           # Cryptographic primitives
+├── protocol_fsm.py           # State machine & key evolution
+├── attacks.py                # Automated attack demonstrations
+├── manual_attacks.py         # Interactive attack tool
+├── test_system.py            # Integration testing
+├── run_all_tests.py          # Comprehensive test runner
+├── logger.py                 # Colored logging utilities
+├── requirements.txt          # Python dependencies
+├── run.sh                    # Quick start script
+├── README.md                 # This file
+├── SECURITY.md               # Security analysis
+└── IMPLEMENTATION_GUIDE.md   # Technical implementation details
 ```
 
-## Development Notes
+---
 
-### Extending the Protocol
+## Implementation Highlights
 
-To add new opcodes:
-1. Add to `Opcode` enum in `protocol_fsm.py`
-2. Update `VALID_TRANSITIONS` in `ProtocolFSM`
-3. Implement handlers in server and client
+### 1. Strict State Management
+- Session phases: **INIT → ACTIVE → TERMINATED**
+- FSM validates all opcode transitions
+- Invalid transitions cause immediate termination
 
-### Custom Aggregation
+### 2. Atomic Key Evolution
+- Keys evolve only after successful message exchange
+- Failures do not update keys (prevents desynchronization)
+- Deterministic evolution ensures client-server synchronization
 
-Modify `compute_aggregation()` in `server.py` to implement custom aggregation logic (e.g., sum, median, weighted average).
+### 3. Encrypt-then-MAC
+- HMAC verification **before** decryption
+- Prevents padding oracle attacks
+- Protects against ciphertext tampering
 
-## License
+### 4. Manual PKCS#7 Padding
+- Explicit padding implementation (no library shortcuts)
+- Validation detects tampering
+- Conforms to assignment requirements
 
-This is an academic project for System and Network Security course.
+### 5. Multi-threaded Server
+- Handles multiple concurrent clients
+- Per-client session state
+- Thread-safe aggregation with locking
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+**Issue**: `ModuleNotFoundError: No module named 'Crypto'`  
+**Solution**: Install pycryptodome:
+```bash
+pip install pycryptodome
+```
+
+**Issue**: `Address already in use`  
+**Solution**: Kill existing server process:
+```bash
+pkill -f server.py
+# Or on Windows: taskkill /F /IM python.exe
+```
+
+**Issue**: Client connection refused  
+**Solution**: Ensure server is running first:
+```bash
+python3 server.py  # Start this first
+python3 client.py 1  # Then start clients
+```
+
+**Issue**: HMAC verification failures  
+**Solution**: Ensure client ID matches server's master key database (valid IDs: 1-5)
+
+---
+
+## Assignment Compliance
+
+This implementation fulfills all assignment requirements:
+
+✅ **Stateful Protocol**: Round tracking, key evolution, phase management  
+✅ **Manual PKCS#7**: Explicit padding implementation  
+✅ **Encrypt-then-MAC**: HMAC before decryption  
+✅ **Key Evolution**: Deterministic ratcheting after each round  
+✅ **Attack Resistance**: 10+ attack scenarios demonstrated  
+✅ **Multi-Client Aggregation**: Server-side secure aggregation  
+✅ **Error Handling**: HMAC failures, replays, reordering, desync  
+✅ **No Forbidden Libraries**: No AES-GCM, no automatic padding  
+✅ **Documentation**: README.md and SECURITY.md provided  
+
+---
+
+## References
+
+- **PKCS#7 Padding**: RFC 5652
+- **HMAC**: RFC 2104
+- **AES-CBC**: NIST FIPS 197
+- **Key Derivation**: RFC 5869 (HKDF)
+
+---
 
 ## Authors
 
-[Your Group Number and Names]
+**IIIT Hyderabad - CS5.470 System and Network Security**  
+Lab Assignment 1 - January 2026
 
-## Acknowledgments
+---
 
-- IIIT Hyderabad CS5.470 Course
-- System and Network Security Lab Assignment 1
+## License
+
+This project is submitted as part of academic coursework at IIIT Hyderabad.  
+**Academic Integrity**: Do not copy or redistribute without permission.
+
+---
+
+*For detailed security analysis, see [SECURITY.md](SECURITY.md)*  

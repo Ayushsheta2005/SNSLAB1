@@ -12,6 +12,19 @@ from client import SecureClient
 from crypto_utils import CryptoUtils
 
 
+# Error code names for display
+ERROR_CODE_NAMES = {
+    Opcode.ERROR_INVALID_HMAC: "INVALID_HMAC (Message Tampering)",
+    Opcode.ERROR_REPLAY_DETECTED: "REPLAY_ATTACK (Old Round Number)",
+    Opcode.ERROR_REORDERING_DETECTED: "MESSAGE_REORDERING (Wrong Round)",
+    Opcode.ERROR_KEY_DESYNC: "KEY_DESYNCHRONIZATION (Keys Out of Sync)",
+    Opcode.ERROR_INVALID_DIRECTION: "INVALID_DIRECTION (Reflection Attack)",
+    Opcode.ERROR_INVALID_CLIENT: "UNAUTHORIZED_CLIENT",
+    Opcode.KEY_DESYNC_ERROR: "KEY_DESYNC_ERROR (Legacy)",
+    Opcode.TERMINATE: "TERMINATE",
+}
+
+
 class ManualAttackTool:
     """Interactive tool for manual attack testing"""
     
@@ -33,7 +46,8 @@ class ManualAttackTool:
         print("  5. Reflection Attack - Send server's message back to server")
         print("  6. Unauthorized Client - Connect with invalid credentials")
         print("  7. Raw Message Injection - Craft custom malicious message")
-        print("  8. Exit")
+        print("  8. MITM Simulation - Intercept and modify in transit")
+        print("  9. Exit")
         print()
         
     def setup_legitimate_client(self, client_id: int = 1):
@@ -92,12 +106,16 @@ class ManualAttackTool:
                 
                 if response:
                     opcode = response[0]
-                    if opcode == Opcode.KEY_DESYNC_ERROR.value:
-                        print("[RESULT] ✓ Attack BLOCKED - Server sent KEY_DESYNC_ERROR")
+                    error_name = ERROR_CODE_NAMES.get(Opcode(opcode), f"Unknown ({opcode})")
+                    if opcode in [Opcode.KEY_DESYNC_ERROR.value, Opcode.ERROR_REPLAY_DETECTED.value]:
+                        print(f"[RESULT] ✓ Attack BLOCKED - Server detected attack")
+                        print(f"[RESULT]    Error Code: {error_name}")
                     elif opcode == Opcode.TERMINATE.value:
-                        print("[RESULT] ✓ Attack BLOCKED - Server terminated session")
+                        print(f"[RESULT] ✓ Attack BLOCKED - Server terminated session")
+                        print(f"[RESULT]    Error Code: {error_name}")
                     else:
-                        print(f"[RESULT] ⚠️ Unexpected response (opcode: {opcode})")
+                        print(f"[RESULT] ⚠️ Unexpected response")
+                        print(f"[RESULT]    Opcode: {error_name}")
                 else:
                     print("[RESULT] ✓ Attack BLOCKED - No response")
             except socket.timeout:
@@ -277,10 +295,14 @@ class ManualAttackTool:
                 
                 if response and len(response) >= 1:
                     opcode = response[0]
-                    if opcode in [Opcode.KEY_DESYNC_ERROR.value, Opcode.TERMINATE.value]:
-                        print("[RESULT] ✓ Attack BLOCKED - Server rejected reflection")
+                    error_name = ERROR_CODE_NAMES.get(Opcode(opcode), f"Unknown ({opcode})")
+                    if opcode in [Opcode.KEY_DESYNC_ERROR.value, Opcode.TERMINATE.value,
+                                 Opcode.ERROR_INVALID_DIRECTION.value]:
+                        print(f"[RESULT] ✓ Attack BLOCKED - Server rejected reflection")
+                        print(f"[RESULT]    Error Code: {error_name}")
                     else:
-                        print(f"[RESULT] ⚠️ Unexpected response (opcode: {opcode})")
+                        print(f"[RESULT] ⚠️ Unexpected response")
+                        print(f"[RESULT]    Opcode: {error_name}")
                 else:
                     print("[RESULT] ✓ Attack BLOCKED - No response")
             except socket.timeout:
@@ -382,6 +404,71 @@ class ManualAttackTool:
             
         except Exception as e:
             print(f"[ERROR] {e}")
+            
+    def manual_mitm_simulation(self):
+        """Simulate man-in-the-middle attack"""
+        print("\n" + "-"*70)
+        print("MANUAL MITM SIMULATION")
+        print("-"*70)
+        
+        print("\n[SCENARIO] Attacker intercepts messages between client and server")
+        
+        client_id = int(input("Enter legitimate client ID to monitor (1-5): "))
+        
+        if not self.setup_legitimate_client(client_id):
+            return
+            
+        print("\n[STEP 1] Normal message exchange...")
+        data = input("Enter data to send: ")
+        
+        print("\n[MITM] You are intercepting the message stream")
+        print("Choose MITM action:")
+        print("  1. Pass through unchanged (baseline)")
+        print("  2. Modify one byte")
+        print("  3. Drop message (DoS)")
+        print("  4. Duplicate message")
+        
+        choice = input("Select (1-4): ")
+        
+        original_send = self.client.send_message
+        
+        if choice == '1':
+            print("\n[MITM] Passing through unchanged...")
+            success = self.client.send_data(data)
+            print(f"[RESULT] Message delivered: {success}")
+            
+        elif choice == '2':
+            def mitm_modify(msg):
+                modified = bytearray(msg)
+                pos = len(modified) // 2
+                modified[pos] ^= 0xFF
+                print(f"[MITM] Modified byte at position {pos}")
+                original_send(bytes(modified))
+                
+            self.client.send_message = mitm_modify
+            success = self.client.send_data(data)
+            print(f"[RESULT] {'✓ Blocked' if not success else '⚠️ Accepted'}")
+            
+        elif choice == '3':
+            def mitm_drop(msg):
+                print("[MITM] Dropping message (DoS)")
+                # Don't send anything
+                
+            self.client.send_message = mitm_drop
+            success = self.client.send_data(data)
+            print("[RESULT] Message dropped - connection will timeout")
+            
+        elif choice == '4':
+            def mitm_duplicate(msg):
+                print("[MITM] Sending message twice...")
+                original_send(msg)
+                original_send(msg)  # Send duplicate
+                
+            self.client.send_message = mitm_duplicate
+            success = self.client.send_data(data)
+            print("[RESULT] Second message should be rejected by round number check")
+            
+        self.client.disconnect()
         
     def run(self):
         """Main interactive loop"""
@@ -389,7 +476,7 @@ class ManualAttackTool:
             self.print_menu()
             
             try:
-                choice = input("Select attack (1-8): ").strip()
+                choice = input("Select attack (1-9): ").strip()
                 
                 if choice == '1':
                     self.manual_replay_attack()
@@ -406,6 +493,8 @@ class ManualAttackTool:
                 elif choice == '7':
                     self.manual_raw_injection()
                 elif choice == '8':
+                    self.manual_mitm_simulation()
+                elif choice == '9':
                     print("\nExiting manual attack tool...")
                     break
                 else:

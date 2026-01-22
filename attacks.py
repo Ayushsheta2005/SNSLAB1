@@ -12,6 +12,19 @@ from client import SecureClient
 from crypto_utils import CryptoUtils
 
 
+# Error code names for display
+ERROR_CODE_NAMES = {
+    Opcode.ERROR_INVALID_HMAC: "INVALID_HMAC (Message Tampering)",
+    Opcode.ERROR_REPLAY_DETECTED: "REPLAY_ATTACK (Old Round Number)",
+    Opcode.ERROR_REORDERING_DETECTED: "MESSAGE_REORDERING (Wrong Round)",
+    Opcode.ERROR_KEY_DESYNC: "KEY_DESYNCHRONIZATION (Keys Out of Sync)",
+    Opcode.ERROR_INVALID_DIRECTION: "INVALID_DIRECTION (Reflection Attack)",
+    Opcode.ERROR_INVALID_CLIENT: "UNAUTHORIZED_CLIENT",
+    Opcode.KEY_DESYNC_ERROR: "KEY_DESYNC_ERROR (Legacy)",
+    Opcode.TERMINATE: "TERMINATE",
+}
+
+
 class AttackScenarios:
     """Demonstrates various attack scenarios"""
     
@@ -32,6 +45,17 @@ class AttackScenarios:
             raise
         return client
     
+    def _cleanup_client(self, client):
+        """Standardized cleanup for all attacks - ensures proper session termination"""
+        if client:
+            try:
+                if hasattr(client, 'socket') and client.socket:
+                    client.socket.settimeout(1)  # Quick timeout for cleanup
+                client.disconnect()
+            except Exception as e:
+                # Silently ignore cleanup errors (connection may already be closed)
+                pass
+    
     def replay_attack(self):
         """
         Demonstrates replay attack resistance.
@@ -42,6 +66,7 @@ class AttackScenarios:
         print("="*60)
         
         master_key = b'client1_master_k'
+        client = None
         
         try:
             print("\n[ATTACK] Connecting to server...")
@@ -87,8 +112,11 @@ class AttackScenarios:
                     # Check if it's an error response
                     if len(response) >= 7:
                         opcode = response[0]
-                        if opcode == Opcode.KEY_DESYNC_ERROR.value or opcode == Opcode.TERMINATE.value:
-                            print("[ATTACK] ✓ Server rejected replayed message (KEY_DESYNC_ERROR)")
+                        error_name = ERROR_CODE_NAMES.get(Opcode(opcode), f"Unknown ({opcode})")
+                        if opcode in [Opcode.ERROR_REPLAY_DETECTED.value, Opcode.ERROR_KEY_DESYNC.value, 
+                                     Opcode.KEY_DESYNC_ERROR.value, Opcode.TERMINATE.value]:
+                            print(f"[ATTACK] ✓ Server rejected replayed message")
+                            print(f"[ATTACK]    Error Code: {error_name}")
                         else:
                             print(f"[ATTACK] ❌ VULNERABILITY: Server accepted replayed message! (opcode: {opcode})")
                     else:
@@ -109,12 +137,7 @@ class AttackScenarios:
         except Exception as e:
             print(f"[ATTACK] Error during setup: {e}")
         finally:
-            try:
-                if client.socket:
-                    client.socket.close()
-            except:
-                pass
-            client.disconnect()
+            self._cleanup_client(client)
     
     def message_modification_attack(self):
         """
@@ -126,6 +149,7 @@ class AttackScenarios:
         print("="*60)
         
         master_key = b'client2_master_k'
+        client = None
         
         try:
             client = self._setup_client(2, master_key)
@@ -165,7 +189,7 @@ class AttackScenarios:
         except Exception as e:
             print(f"[ATTACK] Error: {e}")
         finally:
-            client.disconnect()
+            self._cleanup_client(client)
     
     def key_desync_attack(self):
         """
@@ -177,6 +201,7 @@ class AttackScenarios:
         print("="*60)
         
         master_key = b'client3_master_k'
+        client = None
         
         try:
             client = self._setup_client(3, master_key)
@@ -206,7 +231,7 @@ class AttackScenarios:
         except Exception as e:
             print(f"[ATTACK] Error: {e}")
         finally:
-            client.disconnect()
+            self._cleanup_client(client)
     
     def message_reordering_attack(self):
         """
@@ -220,6 +245,7 @@ class AttackScenarios:
         print("[ATTACK] by manipulating round numbers...")
         
         master_key = b'client4_master_k'
+        client = None
         
         try:
             client = self._setup_client(4, master_key)
@@ -253,7 +279,7 @@ class AttackScenarios:
         except Exception as e:
             print(f"[ATTACK] Error: {e}")
         finally:
-            client.disconnect()
+            self._cleanup_client(client)
     
     def reflection_attack(self):
         """
@@ -265,6 +291,7 @@ class AttackScenarios:
         print("="*60)
         
         master_key = b'client5_master_k'
+        client = None
         
         try:
             client = self._setup_client(5, master_key)
@@ -298,8 +325,11 @@ class AttackScenarios:
                     # Check if it's an error response
                     if len(response) >= 7:
                         opcode = response[0]
-                        if opcode == Opcode.KEY_DESYNC_ERROR.value or opcode == Opcode.TERMINATE.value:
-                            print("[ATTACK] ✓ Server rejected reflected message (KEY_DESYNC_ERROR)")
+                        error_name = ERROR_CODE_NAMES.get(Opcode(opcode), f"Unknown ({opcode})")
+                        if opcode in [Opcode.ERROR_INVALID_DIRECTION.value, Opcode.ERROR_KEY_DESYNC.value,
+                                     Opcode.KEY_DESYNC_ERROR.value, Opcode.TERMINATE.value]:
+                            print(f"[ATTACK] ✓ Server rejected reflected message")
+                            print(f"[ATTACK]    Error Code: {error_name}")
                         else:
                             print(f"[ATTACK] ❌ VULNERABILITY: Server processed reflected message! (opcode: {opcode})")
                     else:
@@ -320,7 +350,7 @@ class AttackScenarios:
         except Exception as e:
             print(f"[ATTACK] Error: {e}")
         finally:
-            client.disconnect()
+            self._cleanup_client(client)
     
     def packet_dropping_attack(self):
         """
@@ -372,11 +402,7 @@ class AttackScenarios:
         except Exception as e:
             print(f"[ATTACK] Error: {e}")
         finally:
-            try:
-                if client.socket:
-                    client.socket.close()
-            except:
-                pass
+            self._cleanup_client(client)
     
     def padding_tampering_attack(self):
         """
@@ -388,6 +414,7 @@ class AttackScenarios:
         print("="*60)
         
         master_key = b'client2_master_k'
+        client = None
         
         try:
             client = self._setup_client(2, master_key)
@@ -428,7 +455,7 @@ class AttackScenarios:
         except Exception as e:
             print(f"[ATTACK] Error: {e}")
         finally:
-            client.disconnect()
+            self._cleanup_client(client)
     
     def invalid_hmac_attack(self):
         """
@@ -440,6 +467,7 @@ class AttackScenarios:
         print("="*60)
         
         master_key = b'client3_master_k'
+        client = None
         
         try:
             client = self._setup_client(3, master_key)
@@ -479,7 +507,7 @@ class AttackScenarios:
         except Exception as e:
             print(f"[ATTACK] Error: {e}")
         finally:
-            client.disconnect()
+            self._cleanup_client(client)
     
     def state_violation_attack(self):
         """
@@ -491,6 +519,7 @@ class AttackScenarios:
         print("="*60)
         
         master_key = b'client4_master_k'
+        client = None
         
         try:
             print("\n[ATTACK] Attempting to send CLIENT_DATA before handshake...")
@@ -546,20 +575,21 @@ class AttackScenarios:
         except Exception as e:
             print(f"[ATTACK] Error: {e}")
         finally:
-            client.disconnect()
+            self._cleanup_client(client)
     
     def unauthorized_client_attack(self):
         """
         Demonstrates resistance to unauthorized clients.
         """
         print("\n" + "="*60)
-        print("ATTACK SCENARIO 6: UNAUTHORIZED CLIENT ATTACK")
+        print("ATTACK SCENARIO 10: UNAUTHORIZED CLIENT ATTACK")
         print("="*60)
         
         print("\n[ATTACK] Attempting to connect with invalid client ID...")
         
         # Use client ID that's not in server's master key list
         fake_master_key = b'fake_master_key!'
+        client = None
         
         try:
             client = self._setup_client(99, fake_master_key)
@@ -579,7 +609,7 @@ class AttackScenarios:
         except Exception as e:
             print(f"[ATTACK] Error: {e}")
         finally:
-            client.disconnect()
+            self._cleanup_client(client)
     
     def run_all_attacks(self):
         """Run all attack scenarios"""
@@ -597,6 +627,7 @@ class AttackScenarios:
         print("   - Padding Tampering")
         print("   - Invalid HMACs")
         print("   - State Violations")
+        print("   - Unauthorized Client Access")
         print("="*80)
         
         attacks = [
@@ -608,7 +639,8 @@ class AttackScenarios:
             ("KEY DESYNCHRONIZATION", self.key_desync_attack),
             ("PADDING TAMPERING", self.padding_tampering_attack),
             ("INVALID HMAC", self.invalid_hmac_attack),
-            ("STATE VIOLATION", self.state_violation_attack)
+            ("STATE VIOLATION", self.state_violation_attack),
+            ("UNAUTHORIZED CLIENT", self.unauthorized_client_attack)
         ]
         
         passed = 0
