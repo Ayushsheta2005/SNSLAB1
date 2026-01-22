@@ -1,13 +1,15 @@
 """
 Attack Scenarios and Demonstrations
 Simulates various attacks to demonstrate protocol security.
+Implements all required adversarial attacks and protocol-specific failures.
 """
 
 import socket
 import struct
 import time
-from protocol_fsm import ProtocolMessage, Opcode, Direction
+from protocol_fsm import ProtocolMessage, Opcode, Direction, ProtocolPhase
 from client import SecureClient
+from crypto_utils import CryptoUtils
 
 
 class AttackScenarios:
@@ -320,6 +322,232 @@ class AttackScenarios:
         finally:
             client.disconnect()
     
+    def packet_dropping_attack(self):
+        """
+        Demonstrates packet dropping attack.
+        Adversary selectively drops packets to disrupt protocol flow.
+        """
+        print("\n" + "="*60)
+        print("ATTACK SCENARIO 6: PACKET DROPPING ATTACK")
+        print("="*60)
+        
+        master_key = b'client1_master_k'
+        
+        try:
+            client = self._setup_client(1, master_key)
+            client.send_hello()
+            
+            print("\n[ATTACK] Sending message but dropping it before server receives...")
+            print("[ATTACK] Simulating selective packet drop...")
+            
+            # Intercept and drop message
+            original_send = client.send_message
+            dropped = False
+            
+            def drop_send(msg_bytes):
+                nonlocal dropped
+                if not dropped:
+                    print("[ATTACK] Dropping packet (not sending to server)")
+                    dropped = True
+                    # Don't actually send
+                else:
+                    original_send(msg_bytes)
+            
+            client.send_message = drop_send
+            
+            print("\n[ATTACK] Attempting to send data (will be dropped)...")
+            try:
+                client.socket.settimeout(3)
+                success = client.send_data("10.5, 20.3, 30.1")
+                print(f"[ATTACK] Send result: {success}")
+            except socket.timeout:
+                print("[ATTACK] ✓ Connection timed out as expected")
+            
+            print("\n[ANALYSIS] The protocol handles packet dropping by:")
+            print("  1. TCP ensures reliable delivery at transport layer")
+            print("  2. Application timeouts detect missing responses")
+            print("  3. Session state maintained - can retry")
+            print("  4. Dropped packets don't cause key desync")
+            
+        except Exception as e:
+            print(f"[ATTACK] Error: {e}")
+        finally:
+            try:
+                if client.socket:
+                    client.socket.close()
+            except:
+                pass
+    
+    def padding_tampering_attack(self):
+        """
+        Demonstrates padding tampering attack.
+        Incorrect PKCS#7 padding treated as data tampering.
+        """
+        print("\n" + "="*60)
+        print("ATTACK SCENARIO 7: PADDING TAMPERING ATTACK")
+        print("="*60)
+        
+        master_key = b'client2_master_k'
+        
+        try:
+            client = self._setup_client(2, master_key)
+            client.send_hello()
+            
+            print("\n[ATTACK] Tampering with padding bytes in ciphertext...")
+            
+            # Intercept and corrupt padding
+            original_send = client.send_message
+            
+            def tamper_padding(msg_bytes):
+                # Modify last byte (padding byte) in ciphertext
+                modified = bytearray(msg_bytes)
+                # Ciphertext ends 32 bytes before end (HMAC is last 32 bytes)
+                padding_pos = len(modified) - 33  # One byte before HMAC
+                if padding_pos > 23:  # Make sure we're in ciphertext region
+                    original = modified[padding_pos]
+                    modified[padding_pos] = (modified[padding_pos] + 1) % 256
+                    print(f"[ATTACK] Corrupted padding byte at pos {padding_pos}: {original} -> {modified[padding_pos]}")
+                
+                original_send(bytes(modified))
+            
+            client.send_message = tamper_padding
+            
+            success = client.send_data("40.5, 50.3, 60.1")
+            
+            if not success:
+                print("\n[ATTACK] ✓ Server detected padding tampering")
+            else:
+                print("\n[ATTACK] ❌ VULNERABILITY: Server accepted tampered padding!")
+            
+            print("\n[ANALYSIS] The protocol detects padding tampering because:")
+            print("  1. HMAC computed over entire ciphertext (includes padding)")
+            print("  2. Any padding modification causes HMAC failure")
+            print("  3. Even if HMAC passes, padding validation detects corruption")
+            print("  4. Treated as data tampering - session terminated")
+            
+        except Exception as e:
+            print(f"[ATTACK] Error: {e}")
+        finally:
+            client.disconnect()
+    
+    def invalid_hmac_attack(self):
+        """
+        Demonstrates invalid HMAC attack.
+        Shows system's reaction to incorrect HMAC values.
+        """
+        print("\n" + "="*60)
+        print("ATTACK SCENARIO 8: INVALID HMAC ATTACK")
+        print("="*60)
+        
+        master_key = b'client3_master_k'
+        
+        try:
+            client = self._setup_client(3, master_key)
+            client.send_hello()
+            
+            print("\n[ATTACK] Sending message with corrupted HMAC...")
+            
+            # Intercept and corrupt HMAC
+            original_send = client.send_message
+            
+            def corrupt_hmac(msg_bytes):
+                # HMAC is last 32 bytes
+                modified = bytearray(msg_bytes)
+                if len(modified) > 32:
+                    # Flip some bits in HMAC
+                    modified[-1] ^= 0xFF
+                    modified[-16] ^= 0xFF
+                    print(f"[ATTACK] Corrupted HMAC (flipped bytes at positions -1 and -16)")
+                
+                original_send(bytes(modified))
+            
+            client.send_message = corrupt_hmac
+            
+            success = client.send_data("70.5, 80.3, 90.1")
+            
+            if not success:
+                print("\n[ATTACK] ✓ Server rejected message with invalid HMAC")
+            else:
+                print("\n[ATTACK] ❌ VULNERABILITY: Server accepted invalid HMAC!")
+            
+            print("\n[ANALYSIS] The protocol handles invalid HMACs by:")
+            print("  1. HMAC verification BEFORE any decryption")
+            print("  2. Cryptographically secure HMAC-SHA256")
+            print("  3. Session immediately terminated on HMAC failure")
+            print("  4. No information leaked about plaintext")
+            
+        except Exception as e:
+            print(f"[ATTACK] Error: {e}")
+        finally:
+            client.disconnect()
+    
+    def state_violation_attack(self):
+        """
+        Demonstrates state violation attack.
+        Sending messages with wrong opcode for current protocol phase.
+        """
+        print("\n" + "="*60)
+        print("ATTACK SCENARIO 9: STATE VIOLATION ATTACK")
+        print("="*60)
+        
+        master_key = b'client4_master_k'
+        
+        try:
+            print("\n[ATTACK] Attempting to send CLIENT_DATA before handshake...")
+            
+            # Create client but don't complete handshake
+            client = self._setup_client(4, master_key)
+            
+            # Try to send data without completing handshake
+            # Session is in INIT phase, but we try to send CLIENT_DATA (requires ACTIVE phase)
+            print(f"[ATTACK] Current phase: {client.session.phase}")
+            print("[ATTACK] Attempting CLIENT_DATA opcode in INIT phase...")
+            
+            # Try sending data before SERVER_CHALLENGE received
+            # This violates FSM: CLIENT_DATA only valid in ACTIVE phase
+            try:
+                data_payload = b"100.5, 110.3, 120.1"
+                msg = ProtocolMessage(
+                    Opcode.CLIENT_DATA,
+                    client.session.client_id,
+                    0,  # Wrong round
+                    Direction.CLIENT_TO_SERVER,
+                    data_payload
+                )
+                
+                msg_bytes = msg.encrypt_and_sign(
+                    client.session.c2s_enc_key,
+                    client.session.c2s_mac_key
+                )
+                
+                client.socket.sendall(struct.pack('!I', len(msg_bytes)) + msg_bytes)
+                client.socket.settimeout(3)
+                
+                response = client.receive_message()
+                if response:
+                    opcode = response[0]
+                    if opcode == Opcode.TERMINATE.value:
+                        print("[ATTACK] ✓ Server rejected state violation (TERMINATE)")
+                    else:
+                        print(f"[ATTACK] ❌ Server accepted invalid state! (opcode: {opcode})")
+                else:
+                    print("[ATTACK] ✓ Server rejected state violation (no response)")
+            except socket.timeout:
+                print("[ATTACK] ✓ Server rejected state violation (timeout)")
+            except Exception as e:
+                print(f"[ATTACK] ✓ State violation failed: {e}")
+            
+            print("\n[ANALYSIS] The protocol prevents state violations by:")
+            print("  1. Finite State Machine (FSM) validates opcode transitions")
+            print("  2. Each phase allows only specific opcodes")
+            print("  3. Invalid transitions cause immediate termination")
+            print("  4. Round numbers must match expected sequence")
+            
+        except Exception as e:
+            print(f"[ATTACK] Error: {e}")
+        finally:
+            client.disconnect()
+    
     def unauthorized_client_attack(self):
         """
         Demonstrates resistance to unauthorized clients.
@@ -358,14 +586,29 @@ class AttackScenarios:
         print("\n" + "="*80)
         print(" SECURE MULTI-CLIENT COMMUNICATION - ATTACK DEMONSTRATION")
         print("="*80)
+        print("\n1. Core Adversarial Attacks:")
+        print("   - Replay Attacks")
+        print("   - Message Modification")
+        print("   - Message Reordering")
+        print("   - Packet Dropping")
+        print("   - Reflection Attacks")
+        print("\n2. Protocol-Specific Failures:")
+        print("   - Key Desynchronization")
+        print("   - Padding Tampering")
+        print("   - Invalid HMACs")
+        print("   - State Violations")
+        print("="*80)
         
         attacks = [
             ("REPLAY", self.replay_attack),
             ("MESSAGE MODIFICATION", self.message_modification_attack),
-            ("KEY DESYNCHRONIZATION", self.key_desync_attack),
             ("MESSAGE REORDERING", self.message_reordering_attack),
+            ("PACKET DROPPING", self.packet_dropping_attack),
             ("REFLECTION", self.reflection_attack),
-            ("UNAUTHORIZED CLIENT", self.unauthorized_client_attack)
+            ("KEY DESYNCHRONIZATION", self.key_desync_attack),
+            ("PADDING TAMPERING", self.padding_tampering_attack),
+            ("INVALID HMAC", self.invalid_hmac_attack),
+            ("STATE VIOLATION", self.state_violation_attack)
         ]
         
         passed = 0

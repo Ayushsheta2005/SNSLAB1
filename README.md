@@ -34,8 +34,14 @@ This project implements a stateful, symmetric-key-based secure communication pro
    - Maintains synchronization
 
 5. **attacks.py**: Attack demonstrations
-   - Simulates various attack scenarios
+   - Simulates 9 different attack scenarios
    - Demonstrates protocol security properties
+   - Covers both adversarial and protocol-specific attacks
+
+6. **manual_attacks.py**: Interactive attack tool
+   - Manual attack testing interface
+   - Custom message crafting
+   - MITM simulation
 
 ## Requirements
 
@@ -90,11 +96,25 @@ Each client will:
 ### Running Attack Demonstrations
 
 Ensure the server is running, then:
+
+**Automated Attacks:**
 ```bash
 python attacks.py
 ```
 
-This will demonstrate 6 different attack scenarios and show how the protocol resists them.
+This will demonstrate 9 different attack scenarios:
+- **Core Adversarial Attacks**: Replay, Message Modification, Message Reordering, Packet Dropping, Reflection
+- **Protocol-Specific Failures**: Key Desynchronization, Padding Tampering, Invalid HMACs, State Violations
+
+**Manual Interactive Attacks:**
+```bash
+python manual_attacks.py
+```
+
+**Verify All Attacks Are Implemented:**
+```bash
+python verify_attacks.py
+```
 
 ## Protocol Flow
 
@@ -214,9 +234,17 @@ SNSLAB1/
 ├── protocol_fsm.py       # Protocol state machine
 ├── server.py            # Server implementation
 ├── client.py            # Client implementation
-├── attacks.py           # Attack demonstrations
+├── attacks.py           # Automated attack demonstrations (9 attacks)
+├── manual_attacks.py    # Interactive attack tool
+├── verify_attacks.py    # Attack implementation verification
+├── test_system.py       # Automated system testing
+├── test_round_aggregation.py  # Round-by-round aggregation test
+├── run.sh               # Menu-driven launcher script
 ├── README.md            # This file
-└── SECURITY.md          # Security analysis
+├── SECURITY.md          # Security analysis
+├── ATTACKS_SUMMARY.md   # Attack implementation details
+├── IMPLEMENTATION_GUIDE.md  # Detailed implementation guide
+└── QUICK_START.md       # Quick start guide
 ```
 
 ## Development Notes

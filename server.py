@@ -31,7 +31,10 @@ class SecureServer:
         self.port = port
         self.socket = None
         self.sessions: Dict[int, SessionState] = {}
-        self.client_data: Dict[int, List[float]] = {}  # Store client data for aggregation
+        # Track data by round number: round_data[round_num][client_id] = [values]
+        self.round_data: Dict[int, Dict[int, List[float]]] = {}
+        # Track active clients (connected and not terminated)
+        self.active_clients: set = set()
         self.lock = threading.Lock()
         self.running = False
         
@@ -103,14 +106,25 @@ class SecureServer:
                     response_length = struct.pack('!I', len(response))
                     client_sock.sendall(response_length + response)
                 
-                # Update session reference
+                # Update session reference and extract client_id
+                if response and not session:
+                    # After first message, extract client_id from message
+                    if len(msg_data) >= 2:
+                        client_id = msg_data[1]
+                        session = self.sessions.get(client_id)
+                
+                # Check if session terminated
                 if session and session.is_terminated():
-                    print(f"[SERVER] Session terminated for client {client_id}")
+                    print(f"[SERVER] Session terminated for client {session.client_id}")
+                    client_id = session.client_id
                     break
                     
         except Exception as e:
             print(f"[SERVER] Error handling client {client_addr}: {e}")
         finally:
+            # Remove client from all aggregations when disconnected
+            if client_id:
+                self.remove_client_from_aggregations(client_id)
             client_sock.close()
             print(f"[SERVER] Connection closed for {client_addr}")
     
@@ -185,7 +199,8 @@ class SecureServer:
             with self.lock:
                 session = SessionState(client_id, self.master_keys[client_id])
                 self.sessions[client_id] = session
-                self.client_data[client_id] = []
+                self.active_clients.add(client_id)
+                print(f"[SERVER] Client {client_id} marked as active")
             
             # Parse and verify CLIENT_HELLO
             msg = ProtocolMessage.parse_and_verify(
@@ -273,15 +288,25 @@ class SecureServer:
             
             numbers = [float(x.strip()) for x in data_str.split(',')]
             
-            # Store data for aggregation
+            # Get current round number for this client
+            current_round = session.round_number
+            
+            # Store data indexed by round number
             with self.lock:
-                self.client_data[session.client_id].extend(numbers)
+                # Initialize round dictionary if it doesn't exist
+                if current_round not in self.round_data:
+                    self.round_data[current_round] = {}
+                
+                # Store this client's data for this specific round
+                self.round_data[current_round][session.client_id] = numbers
+                
+                print(f"[SERVER] Client {session.client_id} completed round {current_round} with data: {numbers}")
             
             # Evolve C2S keys
             session.evolve_c2s_keys(msg.ciphertext, msg.iv)
             
-            # Compute aggregation across all active clients
-            aggregated_result = self.compute_aggregation()
+            # Compute aggregation for this specific round number
+            aggregated_result = self.compute_aggregation(current_round)
             
             # Send response
             response_payload = f"Aggregated: {aggregated_result:.2f}".encode()
@@ -315,32 +340,72 @@ class SecureServer:
             print(f"[SERVER] Error handling CLIENT_DATA: {e}")
             return self.send_terminate(session, f"Error: {e}")
     
-    def compute_aggregation(self) -> float:
+    def compute_aggregation(self, round_num: int) -> float:
         """
-        Compute aggregation across all client data.
-        Aggregates the average of each client's most recent contribution.
+        Compute aggregation for a SPECIFIC round number.
+        Aggregates data from ALL ACTIVE clients who have successfully completed that round.
+        Excludes disconnected or terminated clients.
         
+        Each round's aggregation is independent:
+        - Round 1 aggregate = average of all data from all ACTIVE clients who completed round 1
+        - Round 2 aggregate = average of all data from all ACTIVE clients who completed round 2
+        - etc.
+        
+        Args:
+            round_num: The specific round number to aggregate
+            
         Returns:
-            Average of all clients' current round data
+            Average of all data points from all ACTIVE clients in that round
         """
         with self.lock:
-            if not self.client_data:
+            # Check if this round has any data
+            if round_num not in self.round_data:
+                print(f"[SERVER] No data for round {round_num} yet")
                 return 0.0
             
-            # For proper per-round aggregation:
-            # Calculate the average of the most recent data from each client
-            client_averages = []
-            for client_id, data_list in self.client_data.items():
-                if data_list:  # Only include clients that have sent data
-                    # Use all data points from this client
-                    client_avg = sum(data_list) / len(data_list)
-                    client_averages.append(client_avg)
-            
-            if not client_averages:
+            round_clients = self.round_data[round_num]
+            if not round_clients:
                 return 0.0
             
-            # Return the average across all clients
-            return sum(client_averages) / len(client_averages)
+            # Collect data points ONLY from ACTIVE clients who completed this round
+            all_values = []
+            active_contributors = 0
+            for client_id, numbers in round_clients.items():
+                # Only include data from clients that are still active
+                if client_id in self.active_clients and numbers:
+                    all_values.extend(numbers)
+                    active_contributors += 1
+                    print(f"[SERVER] Round {round_num} - Client {client_id} contributed: {numbers}")
+                elif client_id not in self.active_clients:
+                    print(f"[SERVER] Round {round_num} - Client {client_id} excluded (disconnected/terminated)")
+            
+            if not all_values:
+                return 0.0
+            
+            # Calculate average across all values from active clients
+            result = sum(all_values) / len(all_values)
+            print(f"[SERVER] Round {round_num} aggregate = {result:.2f} (from {len(all_values)} values across {active_contributors} active clients)")
+            
+            return result
+    
+    def remove_client_from_aggregations(self, client_id: int):
+        """
+        Remove a client from active set when they disconnect or session terminates.
+        This excludes their data from future aggregation calculations.
+        Historical data remains in round_data but is excluded via active_clients check.
+        
+        Args:
+            client_id: Client identifier to remove
+        """
+        with self.lock:
+            if client_id in self.active_clients:
+                self.active_clients.remove(client_id)
+                print(f"[SERVER] Client {client_id} removed from active clients (excluded from aggregations)")
+            
+            # Optionally remove session
+            if client_id in self.sessions:
+                del self.sessions[client_id]
+                print(f"[SERVER] Session for client {client_id} removed")
     
     def send_key_desync_error(self, session: SessionState) -> bytes:
         """
