@@ -33,11 +33,14 @@ echo ""
 echo "1. Run complete demonstration (recommended)"
 echo "2. Start server only"
 echo "3. Start client (you'll be asked for client ID)"
-echo "4. Run automated attack demonstrations"
+echo "4. Run automated attack demonstrations (9 attacks)"
 echo "5. Run manual attack tool (interactive)"
-echo "6. Exit"
+echo "6. Verify attack implementation (check all 9 attacks present)"
+echo "7. Test round-by-round aggregation"
+echo "8. Test client disconnection behavior"
+echo "9. Exit"
 echo ""
-read -p "Enter choice (1-6): " choice
+read -p "Enter choice (1-9): " choice
 
 case $choice in
     1)
@@ -63,6 +66,10 @@ case $choice in
     4)
         echo ""
         echo "Running automated attack demonstrations..."
+        echo "Demonstrating 9 attacks:"
+        echo "  - Core Adversarial: Replay, Message Modification, Reordering, Packet Dropping, Reflection"
+        echo "  - Protocol-Specific: Key Desync, Padding Tampering, Invalid HMAC, State Violations"
+        echo ""
         echo "Make sure the server is running in another terminal!"
         echo ""
         read -p "Press Enter to continue..."
@@ -77,6 +84,26 @@ case $choice in
         $VENV_PYTHON manual_attacks.py
         ;;
     6)
+        echo ""
+        echo "Verifying attack implementation..."
+        echo ""
+        $VENV_PYTHON verify_attacks.py
+        ;;
+    7)
+        echo ""
+        echo "Testing round-by-round aggregation..."
+        echo "This will demonstrate proper per-round aggregation behavior"
+        echo ""
+        $VENV_PYTHON test_round_aggregation.py
+        ;;
+    8)
+        echo ""
+        echo "Testing client disconnection behavior..."
+        echo "This will verify disconnected clients are excluded from aggregations"
+        echo ""
+        $VENV_PYTHON test_disconnect_aggregation.py
+        ;;
+    9)
         echo ""
         echo "Exiting..."
         exit 0

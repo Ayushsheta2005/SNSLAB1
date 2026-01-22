@@ -41,7 +41,7 @@ This project implements a stateful, symmetric-key-based secure communication pro
 6. **manual_attacks.py**: Interactive attack tool
    - Manual attack testing interface
    - Custom message crafting
-   - MITM simulation
+   - Interactive security testing
 
 ## Requirements
 

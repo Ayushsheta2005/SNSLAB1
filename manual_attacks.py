@@ -33,8 +33,7 @@ class ManualAttackTool:
         print("  5. Reflection Attack - Send server's message back to server")
         print("  6. Unauthorized Client - Connect with invalid credentials")
         print("  7. Raw Message Injection - Craft custom malicious message")
-        print("  8. MITM Simulation - Intercept and modify in transit")
-        print("  9. Exit")
+        print("  8. Exit")
         print()
         
     def setup_legitimate_client(self, client_id: int = 1):
@@ -383,71 +382,6 @@ class ManualAttackTool:
             
         except Exception as e:
             print(f"[ERROR] {e}")
-            
-    def manual_mitm_simulation(self):
-        """Simulate man-in-the-middle attack"""
-        print("\n" + "-"*70)
-        print("MANUAL MITM SIMULATION")
-        print("-"*70)
-        
-        print("\n[SCENARIO] Attacker intercepts messages between client and server")
-        
-        client_id = int(input("Enter legitimate client ID to monitor (1-5): "))
-        
-        if not self.setup_legitimate_client(client_id):
-            return
-            
-        print("\n[STEP 1] Normal message exchange...")
-        data = input("Enter data to send: ")
-        
-        print("\n[MITM] You are intercepting the message stream")
-        print("Choose MITM action:")
-        print("  1. Pass through unchanged (baseline)")
-        print("  2. Modify one byte")
-        print("  3. Drop message (DoS)")
-        print("  4. Duplicate message")
-        
-        choice = input("Select (1-4): ")
-        
-        original_send = self.client.send_message
-        
-        if choice == '1':
-            print("\n[MITM] Passing through unchanged...")
-            success = self.client.send_data(data)
-            print(f"[RESULT] Message delivered: {success}")
-            
-        elif choice == '2':
-            def mitm_modify(msg):
-                modified = bytearray(msg)
-                pos = len(modified) // 2
-                modified[pos] ^= 0xFF
-                print(f"[MITM] Modified byte at position {pos}")
-                original_send(bytes(modified))
-                
-            self.client.send_message = mitm_modify
-            success = self.client.send_data(data)
-            print(f"[RESULT] {'✓ Blocked' if not success else '⚠️ Accepted'}")
-            
-        elif choice == '3':
-            def mitm_drop(msg):
-                print("[MITM] Dropping message (DoS)")
-                # Don't send anything
-                
-            self.client.send_message = mitm_drop
-            success = self.client.send_data(data)
-            print("[RESULT] Message dropped - connection will timeout")
-            
-        elif choice == '4':
-            def mitm_duplicate(msg):
-                print("[MITM] Sending message twice...")
-                original_send(msg)
-                original_send(msg)  # Send duplicate
-                
-            self.client.send_message = mitm_duplicate
-            success = self.client.send_data(data)
-            print("[RESULT] Second message should be rejected by round number check")
-            
-        self.client.disconnect()
         
     def run(self):
         """Main interactive loop"""
@@ -455,7 +389,7 @@ class ManualAttackTool:
             self.print_menu()
             
             try:
-                choice = input("Select attack (1-9): ").strip()
+                choice = input("Select attack (1-8): ").strip()
                 
                 if choice == '1':
                     self.manual_replay_attack()
@@ -472,8 +406,6 @@ class ManualAttackTool:
                 elif choice == '7':
                     self.manual_raw_injection()
                 elif choice == '8':
-                    self.manual_mitm_simulation()
-                elif choice == '9':
                     print("\nExiting manual attack tool...")
                     break
                 else:
